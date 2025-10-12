@@ -43,7 +43,7 @@ namespace CRMRepo.Services
                     {
                         FontSize = 10,
                         Right = (DateTime.UtcNow.ToString("dd/MM/yyyy HH:mm")),
-                        Left = "تم التطوير بواسطة CyShield",
+                        Left = "تم التطوير بواسطة",
                         Center = titleSheetName,
                         Line = true,
                         Spacing = 2.812
@@ -51,7 +51,7 @@ namespace CRMRepo.Services
                     FooterSettings = new FooterSettings
                     {
                         FontSize = 8,
-                        Center = "Cyshield",
+                        Center = "",
                         Right = " صفحة [page] من [toPage]",
                         Line = true
                     }
