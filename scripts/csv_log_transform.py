@@ -5,32 +5,25 @@ csv_log_transform.py
 Read a CSV file, rename headers according to a provided mapping (dictionary), and
 log every record to a separate output CSV file with the transformed headers.
 
+Header mapping is defined in this file via the `HEADER_MAPPING` variable.
+
 Usage examples:
 
-1) Mapping provided via a JSON file:
-   $ python scripts/csv_log_transform.py input.csv \
-       --mapping-file header_map.json \
-       --output input.log.csv
+1) Basic run using in-file mapping:
+   $ python scripts/csv_log_transform.py input.csv --output input.log.csv
 
-   Where header_map.json is a JSON object like:
-   {
-     "old_col_a": "new_col_a",
-     "old_col_b": "new_col_b"
-   }
+2) Drop columns that are not present in the mapping:
+   $ python scripts/csv_log_transform.py input.csv --drop-unmapped
 
-2) Mapping provided inline using repeated --map pairs (old:new):
-   $ python scripts/csv_log_transform.py input.csv \
-       --map old_col_a:new_col_a --map old_col_b:new_col_b
-
-3) Drop columns that are not present in the mapping:
-   $ python scripts/csv_log_transform.py input.csv \
-       --mapping-file header_map.json --drop-unmapped
-
-4) Handle header name collisions after mapping by auto-suffixing duplicates:
-   $ python scripts/csv_log_transform.py input.csv \
-       --mapping-file header_map.json --allow-collisions-suffix
+3) Handle header name collisions after mapping by auto-suffixing duplicates:
+   $ python scripts/csv_log_transform.py input.csv --allow-collisions-suffix
 
 Notes:
+- Set `HEADER_MAPPING` below, for example:
+  HEADER_MAPPING = {
+      "old_col_a": "new_col_a",
+      "old_col_b": "new_col_b",
+  }
 - The script streams rows and does not load the entire file into memory.
 - The input CSV dialect (delimiter/quote) is auto-detected when possible.
 - Default encoding is 'utf-8-sig' to tolerate BOM-marked UTF-8 files.
@@ -40,10 +33,17 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+
+# Define your header mapping here. Keys are input CSV headers, values are output headers.
+# Example:
+# HEADER_MAPPING = {
+#     "old_col_a": "new_col_a",
+#     "old_col_b": "new_col_b",
+# }
+HEADER_MAPPING: Dict[str, str] = {}
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -62,24 +62,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--output",
         help=(
             "Path to the output log CSV file. Default: '<input>.log.csv' (suffix appended)."
-        ),
-    )
-    parser.add_argument(
-        "-m",
-        "--mapping-file",
-        help=(
-            "Path to a JSON file containing a string-to-string header mapping. "
-            "Example: {\"old\": \"new\"}"
-        ),
-    )
-    parser.add_argument(
-        "--map",
-        dest="inline_maps",
-        action="append",
-        default=[],
-        help=(
-            "Inline mapping pair in the form 'old:new'. Can be repeated. "
-            "Example: --map a:A --map b:B"
         ),
     )
     parser.add_argument(
@@ -110,54 +92,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Reduce non-error output to a minimum.",
     )
     return parser.parse_args(argv)
-
-
-def parse_inline_mapping(pairs: List[str]) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    for pair in pairs:
-        if ":" not in pair:
-            raise SystemExit(
-                f"Invalid --map value '{pair}'. Expected format 'old:new'."
-            )
-        old, new = pair.split(":", 1)
-        old = old.strip()
-        new = new.strip()
-        if not old or not new:
-            raise SystemExit(
-                f"Invalid --map value '{pair}'. Both old and new must be non-empty."
-            )
-        mapping[old] = new
-    return mapping
-
-
-def load_mapping(mapping_file: Optional[str], inline_pairs: List[str]) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    if mapping_file:
-        path = Path(mapping_file)
-        if not path.exists():
-            raise SystemExit(f"Mapping file not found: {mapping_file}")
-        try:
-            text = path.read_text(encoding="utf-8")
-            loaded = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(
-                f"Failed to parse mapping file as JSON: {mapping_file}\n{exc}"
-            )
-        if not isinstance(loaded, dict):
-            raise SystemExit(
-                "Mapping file JSON must be an object of string-to-string pairs."
-            )
-        for k, v in loaded.items():
-            if not isinstance(k, str) or not isinstance(v, str):
-                raise SystemExit(
-                    "Mapping file JSON must only contain string keys and values."
-                )
-        mapping.update(loaded)
-
-    inline_mapping = parse_inline_mapping(inline_pairs)
-    mapping.update(inline_mapping)
-
-    return mapping
 
 
 def derive_default_output_path(input_path: str) -> str:
@@ -309,8 +243,7 @@ def transform_and_log(
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-
-    mapping = load_mapping(args.mapping_file, args.inline_maps)
+    mapping = HEADER_MAPPING
 
     output = args.output or derive_default_output_path(args.input)
 
