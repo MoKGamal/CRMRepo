@@ -21,6 +21,11 @@ type MapPin = {
   sequence: string; // short label/number
 };
 
+type PinGroup = {
+  color: string;  // hex color like "#FF0000"
+  pins: MapPin[];
+};
+
 type MapRegion = {
   name: string;
   bounds: {
@@ -91,8 +96,11 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   selectedStyle: string = 'satellite';
   mapInstance!: maplibregl.Map;
 
-  // pins container
+  // pins container (flat list for backward compatibility)
   pins: MapPin[] = [];
+  
+  // NEW: pin groups with colors
+  pinGroups: PinGroup[] = [];
 
   // live references
   private markers: maplibregl.Marker[] = [];
@@ -111,8 +119,10 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     this.lng = this.currentRegion.defaultCenter.lng;
     this.lat = this.currentRegion.defaultCenter.lat;
 
-    // Prefer same-tab state first
-    if (Array.isArray(history.state?.pins) && history.state.pins.length) {
+    // Prefer same-tab state first - check for pin groups first, then flat pins
+    if (Array.isArray(history.state?.pinGroups) && history.state.pinGroups.length) {
+      this.setPinGroups(history.state.pinGroups as PinGroup[]);
+    } else if (Array.isArray(history.state?.pins) && history.state.pins.length) {
       this.setPins(history.state.pins as MapPin[]);
     } else {
       // Legacy query param path (single pin)
@@ -245,7 +255,10 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     );
 
     this.mapInstance.on('load', () => {
-      if (this.pins.length) {
+      if (this.pinGroups.length > 0) {
+        this.renderPinGroups(this.pinGroups);
+        this.applyZoomForPins();
+      } else if (this.pins.length) {
         this.renderPins(this.pins);
         this.applyZoomForPins();
       }
@@ -311,6 +324,20 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   /** postMessage flow */
   private onIncomingMessage(ev: MessageEvent) {
     const data = ev.data;
+    
+    // Check for pin groups first
+    const pinGroups = data?.type === 'MAP_PIN_GROUPS' ? data.pinGroups : null;
+    if (Array.isArray(pinGroups) && pinGroups.length) {
+      this.setPinGroups(pinGroups);
+      if (this.mapInstance?.isStyleLoaded()) {
+        this.clearRenderedPins();
+        this.renderPinGroups(this.pinGroups);
+        this.applyZoomForPins();
+      }
+      return;
+    }
+    
+    // Fallback to legacy flat pins
     const pins = Array.isArray(data)
       ? data
       : data?.type === 'MAP_PINS'
@@ -355,6 +382,40 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  private setPinGroups(pinGroups: PinGroup[]) {
+    this.pinGroups = pinGroups.map(group => ({
+      color: group.color || '#FF0000',
+      pins: group.pins
+        .map((p) => ({
+          ...p,
+          sequence: p.sequence ?? '',
+          zoom: p.zoom ?? this.zoom,
+          azimuth: p.azimuth ?? this.azimuth,
+        }))
+        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+    })).filter(group => group.pins.length > 0);
+    
+    // Flatten to get all pins for legacy compatibility
+    this.pins = this.pinGroups.flatMap(g => g.pins);
+    this.isPinned = this.pins.length > 0;
+
+    if (this.isPinned) {
+      const first = this.pins[0];
+      
+      // Detect region based on first pin
+      const detectedRegion = this.detectRegion(first.lat, first.lng);
+      if (detectedRegion !== this.currentRegion) {
+        this.switchRegion(detectedRegion);
+      }
+      
+      this.lat = first.lat;
+      this.lng = first.lng;
+      this.zoom = first.zoom;
+      this.azimuth = first.azimuth;
+      this.MapInfo = first.info ?? '';
+    }
+  }
+
   private applyZoomForPins() {
     if (!this.mapInstance) return;
     if (this.pins.length === 1) {
@@ -369,133 +430,149 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  /** NEW: Render pin groups with their respective colors */
+  private renderPinGroups(pinGroups: PinGroup[]) {
+    let globalIndex = 0;
+    pinGroups.forEach((group) => {
+      group.pins.forEach((pin) => {
+        this.renderSinglePin(pin, globalIndex, group.color);
+        globalIndex++;
+      });
+    });
+  }
+
   /** CORE: two-popups-per-pin with single active info popup */
   private renderPins(pins: MapPin[]) {
     pins.forEach((pin, i) => {
-      // marker
-      const marker = new maplibregl.Marker({ color: '#FF0000' })
-        .setLngLat([pin.lng, pin.lat])
-        .addTo(this.mapInstance);
-      this.markers.push(marker);
-
-      // popup builders
-      const makeSequencePopup = () =>
-        new maplibregl.Popup({
-          offset: [0, -35],
-          closeButton: false,
-          closeOnClick: false,
-          maxWidth: "120px",
-          className: "seq-popup"
-        })
-          .setLngLat([pin.lng, pin.lat])
-          .setHTML(
-            `<div class="seq-popup-inner"><strong>${wrapCsv(pin.sequence ?? "")}</strong></div>`
-          );
-
-      const INFO_POPUP_HEIGHT = 220; // px
-
-      const makeInfoPopup = () =>
-        new maplibregl.Popup({
-          offset: [0, -35],
-          closeButton: true,
-          closeOnClick: true,
-          maxWidth: '320px',
-        })
-          .setLngLat([pin.lng, pin.lat])
-          .setHTML(
-            `<div class="info-popup-scroll"
-            style="max-height:${INFO_POPUP_HEIGHT}px;
-                   overflow-y:auto;
-                   white-space:normal;
-                   line-height:1.3;
-                   -webkit-overflow-scrolling:touch;
-                   padding-right:2px;">
-         ${sanitizeInfoHtml(pin.info ?? '')}
-       </div>`
-          );
-
-      // initially show SEQUENCE
-      let seqPopup = makeSequencePopup().addTo(this.mapInstance);
-      this.popups.push(seqPopup);
-
-      // per-pin info popup (created on demand)
-      let infoPopup: maplibregl.Popup | null = null;
-
-      const addPopupRef = (p: maplibregl.Popup) => {
-        if (!this.popups.includes(p)) this.popups.push(p);
-      };
-      const removePopupRef = (p: maplibregl.Popup | null) => {
-        if (!p) return;
-        const idx = this.popups.indexOf(p);
-        if (idx >= 0) this.popups.splice(idx, 1);
-        p.remove();
-      };
-
-      // open info popup logic (ensures only one global info popup)
-      const openInfo = () => {
-        // close any other active info popup
-        if (this.currentInfoPopup && this.currentInfoPopup.isOpen()) {
-          this.currentInfoPopup.remove();
-          this.currentInfoPopup = null;
-        }
-
-        // hide sequence for this pin
-        if (seqPopup) {
-          removePopupRef(seqPopup);
-          seqPopup = null as any;
-        }
-
-        // (re)create info popup
-        if (!infoPopup) {
-          infoPopup = makeInfoPopup();
-
-          // when info closes -> restore sequence (no close button)
-          infoPopup.on('close', () => {
-            if (this.currentInfoPopup === infoPopup) {
-              this.currentInfoPopup = null;
-            }
-            removePopupRef(infoPopup);
-            infoPopup = null;
-
-            seqPopup = makeSequencePopup().addTo(this.mapInstance);
-            addPopupRef(seqPopup);
-          });
-        } else {
-          // make sure not to stack duplicates
-          infoPopup.remove();
-        }
-
-        // open info
-        infoPopup.addTo(this.mapInstance);
-        addPopupRef(infoPopup);
-        this.currentInfoPopup = infoPopup;
-
-        // recenter/zoom
-        this.mapInstance.flyTo({
-          center: [pin.lng, pin.lat],
-          zoom: pin.zoom ?? this.zoom,
-          speed: 1.2,
-        });
-      };
-
-      // click to open info
-      marker.getElement().addEventListener('click', (e) => {
-        e.stopPropagation();
-        openInfo();
-      });
-
-      // azimuth cone (wedge) + arrow
-      const coneId = `azimuth-cone-${i}`;
-      this.drawAzimuthCone(
-        this.mapInstance,
-        pin.lng,
-        pin.lat,
-        pin.azimuth ?? 0,
-        30,
-        300,
-        coneId
-      );
+      this.renderSinglePin(pin, i, '#FF0000');
     });
+  }
+
+  /** Render a single pin with the specified color */
+  private renderSinglePin(pin: MapPin, index: number, color: string) {
+    // marker
+    const marker = new maplibregl.Marker({ color })
+      .setLngLat([pin.lng, pin.lat])
+      .addTo(this.mapInstance);
+    this.markers.push(marker);
+
+    // popup builders
+    const makeSequencePopup = () =>
+      new maplibregl.Popup({
+        offset: [0, -35],
+        closeButton: false,
+        closeOnClick: false,
+        maxWidth: "120px",
+        className: "seq-popup"
+      })
+        .setLngLat([pin.lng, pin.lat])
+        .setHTML(
+          `<div class="seq-popup-inner"><strong>${wrapCsv(pin.sequence ?? "")}</strong></div>`
+        );
+
+    const INFO_POPUP_HEIGHT = 220; // px
+
+    const makeInfoPopup = () =>
+      new maplibregl.Popup({
+        offset: [0, -35],
+        closeButton: true,
+        closeOnClick: true,
+        maxWidth: '320px',
+      })
+        .setLngLat([pin.lng, pin.lat])
+        .setHTML(
+          `<div class="info-popup-scroll"
+          style="max-height:${INFO_POPUP_HEIGHT}px;
+                 overflow-y:auto;
+                 white-space:normal;
+                 line-height:1.3;
+                 -webkit-overflow-scrolling:touch;
+                 padding-right:2px;">
+       ${sanitizeInfoHtml(pin.info ?? '')}
+     </div>`
+        );
+
+    // initially show SEQUENCE
+    let seqPopup = makeSequencePopup().addTo(this.mapInstance);
+    this.popups.push(seqPopup);
+
+    // per-pin info popup (created on demand)
+    let infoPopup: maplibregl.Popup | null = null;
+
+    const addPopupRef = (p: maplibregl.Popup) => {
+      if (!this.popups.includes(p)) this.popups.push(p);
+    };
+    const removePopupRef = (p: maplibregl.Popup | null) => {
+      if (!p) return;
+      const idx = this.popups.indexOf(p);
+      if (idx >= 0) this.popups.splice(idx, 1);
+      p.remove();
+    };
+
+    // open info popup logic (ensures only one global info popup)
+    const openInfo = () => {
+      // close any other active info popup
+      if (this.currentInfoPopup && this.currentInfoPopup.isOpen()) {
+        this.currentInfoPopup.remove();
+        this.currentInfoPopup = null;
+      }
+
+      // hide sequence for this pin
+      if (seqPopup) {
+        removePopupRef(seqPopup);
+        seqPopup = null as any;
+      }
+
+      // (re)create info popup
+      if (!infoPopup) {
+        infoPopup = makeInfoPopup();
+
+        // when info closes -> restore sequence (no close button)
+        infoPopup.on('close', () => {
+          if (this.currentInfoPopup === infoPopup) {
+            this.currentInfoPopup = null;
+          }
+          removePopupRef(infoPopup);
+          infoPopup = null;
+
+          seqPopup = makeSequencePopup().addTo(this.mapInstance);
+          addPopupRef(seqPopup);
+        });
+      } else {
+        // make sure not to stack duplicates
+        infoPopup.remove();
+      }
+
+      // open info
+      infoPopup.addTo(this.mapInstance);
+      addPopupRef(infoPopup);
+      this.currentInfoPopup = infoPopup;
+
+      // recenter/zoom
+      this.mapInstance.flyTo({
+        center: [pin.lng, pin.lat],
+        zoom: pin.zoom ?? this.zoom,
+        speed: 1.2,
+      });
+    };
+
+    // click to open info
+    marker.getElement().addEventListener('click', (e) => {
+      e.stopPropagation();
+      openInfo();
+    });
+
+    // azimuth cone (wedge) + arrow
+    const coneId = `azimuth-cone-${index}`;
+    this.drawAzimuthCone(
+      this.mapInstance,
+      pin.lng,
+      pin.lat,
+      pin.azimuth ?? 0,
+      30,
+      300,
+      coneId
+    );
   }
 
   private fitToPins(pins: MapPin[]) {
@@ -536,7 +613,11 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     this.mapInstance.setStyle(newStyle);
 
     this.mapInstance.once('styledata', () => {
-      if (this.pins.length) {
+      if (this.pinGroups.length > 0) {
+        this.clearRenderedPins();
+        this.renderPinGroups(this.pinGroups);
+        this.applyZoomForPins();
+      } else if (this.pins.length) {
         this.clearRenderedPins();
         this.renderPins(this.pins);
         this.applyZoomForPins();

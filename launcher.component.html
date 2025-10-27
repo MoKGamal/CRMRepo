@@ -1,0 +1,86 @@
+<div class="launcher-container">
+  <h2>Map Test Launcher</h2>
+  
+  <p>Paste or edit pin groups JSON below, then choose how to open the map.</p>
+  
+  <div class="json-editor">
+    <textarea 
+      [(ngModel)]="pinGroupsJson"
+      rows="10"
+      style="width:100%; font-family:monospace; border:1px solid #ccc; border-radius:8px; padding:8px;">
+    </textarea>
+  </div>
+
+  <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+    <button (click)="openNewTabAndPost()" 
+            style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">
+      Open /map in New Tab (postMessage)
+    </button>
+    <button (click)="openSameTabWithState()"
+            style="padding: 8px 16px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
+      Open /map in Same Tab (history.state)
+    </button>
+  </div>
+
+  <div class="info-section" style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 8px;">
+    <h3 style="margin-top: 0;">Expected Structure:</h3>
+    <p style="margin-bottom: 10px; color: #666;">Each pin group has a <strong>color</strong> (hex) and an array of <strong>pins</strong>:</p>
+    <pre style="background-color: white; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px;">
+[
+  {
+    "color": "#FF0000",
+    "pins": [
+      {
+        "lat": 47.5162,
+        "lng": 14.5501,
+        "info": "Info text with &lt;br&gt; tags",
+        "azimuth": 60,
+        "zoom": 7,
+        "sequence": "1,4,5"
+      }
+    ]
+  },
+  {
+    "color": "#00FF00",
+    "pins": [ ... ]
+  }
+]
+    </pre>
+    <p style="margin-bottom: 0; color: #666; font-size: 14px;">
+      <strong>Colors:</strong> #FF0000 (Red), #00FF00 (Green), #0000FF (Blue), #FFFF00 (Yellow), #FF00FF (Magenta), #00FFFF (Cyan), #FFA500 (Orange)
+    </p>
+  </div>
+</div>
+
+<style>
+  .launcher-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+  }
+
+  h2 {
+    color: #333;
+    margin-bottom: 10px;
+  }
+
+  h3 {
+    color: #555;
+  }
+
+  p {
+    color: #666;
+  }
+
+  button:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+    transition: all 0.2s;
+  }
+
+  button:active {
+    transform: translateY(0);
+  }
+</style>
+
