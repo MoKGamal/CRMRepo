@@ -467,7 +467,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       })
         .setLngLat([pin.lng, pin.lat])
         .setHTML(
-          `<div class="seq-popup-inner"><strong>${wrapCsv(pin.sequence ?? "")}</strong></div>`
+          `<div class="seq-popup-inner" style="word-wrap: break-word; overflow-wrap: break-word; white-space: normal; line-height: 1.3;">${sanitizeInfoHtml(pin.sequence ?? "")}</div>`
         );
 
     const INFO_POPUP_HEIGHT = 220; // px
@@ -563,16 +563,19 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     });
 
     // azimuth cone (wedge) + arrow
-    const coneId = `azimuth-cone-${index}`;
-    this.drawAzimuthCone(
-      this.mapInstance,
-      pin.lng,
-      pin.lat,
-      pin.azimuth ?? 0,
-      30,
-      300,
-      coneId
-    );
+    // Skip drawing cone if azimuth is -1 (hide cone indicator)
+    if (pin.azimuth !== -1) {
+      const coneId = `azimuth-cone-${index}`;
+      this.drawAzimuthCone(
+        this.mapInstance,
+        pin.lng,
+        pin.lat,
+        pin.azimuth ?? 0,
+        30,
+        300,
+        coneId
+      );
+    }
   }
 
   private fitToPins(pins: MapPin[]) {
@@ -933,7 +936,86 @@ function sanitizeInfoHtml(s: string): string {
   return root.innerHTML;
 }
 
+/** Normalize and sanitize sequence HTML (similar to info) */
+function sanitizeSequenceHtml(s: string): string {
+  const allowedTags = new Set([
+    "br",
+    "b",
+    "strong",
+    "i",
+    "em",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "td",
+    "th",
+    "div",
+    "span",
+  ]);
+  const allowedAttrs = new Set(["style", "colspan", "rowspan"]);
+
+  const root = document.createElement("div");
+  root.innerHTML = normalizeSequenceHtml(s);
+
+  const walk = (el: Element) => {
+    // clean attributes
+    Array.from(el.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      if (/^on/i.test(name)) el.removeAttribute(attr.name); // no event handlers
+      else if (name === "style" && /url\(|expression\(/i.test(attr.value)) {
+        el.removeAttribute("style"); // no url()/expression()
+      } else if (!allowedAttrs.has(name)) {
+        el.removeAttribute(attr.name);
+      }
+    });
+
+    Array.from(el.children).forEach((child) => {
+      const tag = child.tagName.toLowerCase();
+      if (!allowedTags.has(tag)) {
+        child.replaceWith(document.createTextNode(child.textContent ?? ""));
+      } else {
+        walk(child);
+      }
+    });
+  };
+
+  walk(root);
+  return root.innerHTML;
+}
+
+/** Normalize sequence HTML before sanitizing */
+function normalizeSequenceHtml(raw: string): string {
+  if (!raw) return "";
+
+  // 1) Decode if URL-encoded
+  let s = /%(?:[0-9A-Fa-f]{2})/.test(raw) ? decodeURIComponent(raw) : raw;
+
+  // 2) If there's a table fragment but no <table>, wrap it
+  const fragIdx = s.search(/<(thead|tbody|tr)\b/i);
+  if (fragIdx >= 0 && !/<table\b/i.test(s)) {
+    const head = s.slice(0, fragIdx);
+    const tableFrag = s.slice(fragIdx);
+    s = `${head}<table style="border-collapse:collapse;margin-top:4px">${tableFrag}</table>`;
+  }
+
+  // 3) Convert newlines to <br> so the plain lines break correctly
+  s = s.replace(/\r?\n/g, "<br>");
+
+  // 4) For plain CSV sequences (no HTML tags), add zero-width space after commas for wrapping
+  if (!/[<>]/.test(s)) {
+    s = s.replace(/,/g, ",&#8203;");
+  }
+
+  return s;
+}
+
 function wrapCsv(seq: string): string {
+  // If it contains HTML tags, sanitize it like info
+  if (/<[^>]+>/.test(seq)) {
+    return sanitizeSequenceHtml(seq);
+  }
+  // Otherwise, use legacy plain text handling with comma wrapping
   const safe = escapeHtml(seq || "");
   return safe.replace(/,/g, ",&#8203;"); // zero‑width space after comma
 }
